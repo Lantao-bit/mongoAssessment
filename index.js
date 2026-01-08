@@ -4,7 +4,8 @@ require('dotenv').config();  // put the variables in the .env file into process.
 const cors = require('cors');
 const { connect } = require("./db");
 const { ObjectId } = require('mongodb');
-const { ai, generateSearchParams, generateRecipe} = require('./gemini');
+const { ai, generateSearchParams, generateRecipe } = require('./gemini');
+const e = require('express');
 
 // SETUP EXPRESS
 const app = express();
@@ -13,7 +14,7 @@ app.use(express.json()); // tell Express that we are sending and reciving JSON
 
 // SETUP DATABASE
 const mongoUri = process.env.MONGO_URI;   //from Compass cluster connection string 
-const dbName = "recipe_book";            
+const dbName = "recipe_book";
 
 // Validate recipe for POST and PUT
 async function validateRecipe(db, request) {
@@ -90,72 +91,64 @@ async function main() {
     });
 
     // /recipes Search using Query String parameter
-    // example: ?name=chicken&tags=popular,spicy&ingredients=chicken,pasta
+    // example: ?name=chicken&tags=popular,spicy&ingredients=chicken,yogurt
     // name - the name of the recipe of the search b
     // tags - the tags to search for using comma delimited strings
     //        example: popular,spicy
     // ingredients - the ingredients to search for using comma delimited strings
     //        example: pasta,chicken
-    app.get('/recipes', async function (req, res) {
-    //    console.log(req.query);
+    app.get('/recipes/search', async function (req, res) {
+        //    console.log(req.query);
         const name = req.query.name;
         const tags = req.query.tags;
         const ingredients = req.query.ingredients;
-  
-        const criteria = {};     //get all recipes if criteria is an empty object  
+
+        const criteria = {};     //get all recipes if criteria is an empty object 
+
+        // search by string patterns using regular expression
         if (name) {
-            // search by string patterns using regular expression
             criteria["name"] = {
                 $regex: name,
                 $options: "i"
             }
         }
 
+        // search by tags
         if (tags) {
             criteria["tags.name"] = {
                 $in: tags.split(",")
             }
         }
 
-        // simple search - must be exact match and is case sensitive
-        // if (ingredients) {
-        //     critera["ingredients.name"] = {
-        //         $all: ingredients.split(",")
-        //     }
-        // }
+        // advanced search:  use $all with regular expressions
+        //   using arrow function to convert a comma-separated string 
+        //   into array of case insenstive regular expression objects:
 
-        // advanced search: use $all with regular expressions
         if (ingredients) {
-            // traditional way of using for...loop
-            // const ingredientArray = ingredients.split(",");
-            // const regularExpressionArray = [];
-            // for (let ingredient of ingredientArray) {
-            //     regularExpressionArray.push(new RegExp(ingredient, 'i'));
-            // }
-
-            // modern way: use .map
-            // const ingredientArray = ingredients.split(",");
-            // const regularExpressionArray = ingredientArray.map(function(ingredient){
-            //     return new RegExp(ingredient, 'i')
-            // })
-
-            // using arrow function:
             const regularExpressionArray = ingredients.split(",").map(
-                ingredient=> new RegExp(ingredient, 'i')
+                ingredient => new RegExp(ingredient, 'i')
             );
 
-            criteria['ingredients.name'] =  {
+            criteria['ingredients.name'] = {
                 $all: regularExpressionArray
             }
         }
 
-        console.log(criteria);
+        // search by string patterns using regular expression when needed
+        console.log(criteria);  
+
+        // search recipes 
         const recipes = await db.collection('recipes').find(criteria).project({
             name: 1, cuisine: 1, tags: 1, prepTime: 1
         }).toArray();
         res.json({
             "recipes": recipes
         })
+    })
+
+    // Recipe details by _Id
+    app.get('/recipes/detail', async function (req, res) {
+
     })
 
     // tags: ["quick", "easy", "vegetarian"]
@@ -274,7 +267,7 @@ async function main() {
 
     })
 
-    app.get('/ai/recipes', async function(req,res){
+    app.get('/ai/recipes', async function (req, res) {
         const query = req.query.q;
 
         const allCuisines = await db.collection('cuisines').distinct('name');
@@ -291,7 +284,7 @@ async function main() {
             }
         }
 
-        if (searchParams.ingredients && searchParams.ingredients.length > 0){
+        if (searchParams.ingredients && searchParams.ingredients.length > 0) {
             criteria["ingredients.name"] = {
                 $all: searchParams.ingredients
             }
@@ -311,12 +304,12 @@ async function main() {
         })
     })
 
-    app.post('/ai/recipes', async function(req,res){
+    app.post('/ai/recipes', async function (req, res) {
         const recipeText = req.body.recipeText;
         const allCuisines = await db.collection('cuisines').distinct('name');
         const allTags = await db.collection('tags').distinct('name');
         const newRecipe = await generateRecipe(recipeText, allCuisines, allTags);
-        
+
         // get the cuisine document
         const cuisineDoc = await db.collection('cuisines').findOne({
             "name": newRecipe.cuisine
@@ -326,7 +319,7 @@ async function main() {
             newRecipe.cuisine = cuisineDoc;
         } else {
             return res.status(404).json({
-                "error":"AI tried to use a cuisine that doesn't exist"
+                "error": "AI tried to use a cuisine that doesn't exist"
             })
         }
 
