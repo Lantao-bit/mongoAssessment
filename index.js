@@ -6,6 +6,9 @@ const { connect } = require("./db");
 const { ObjectId } = require('mongodb');
 const { ai, generateSearchParams, generateRecipe } = require('./gemini');
 const e = require('express');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const { verifyToken } = require("./middlewares");
 
 // SETUP EXPRESS
 const app = express();
@@ -105,7 +108,7 @@ async function main() {
 
         const criteria = {};     //get all recipes if criteria is an empty object 
 
-        // search by string patterns using regular expression
+        // search criteria:  by string patterns using regular expression
         if (name) {
             criteria["name"] = {
                 $regex: name,
@@ -113,14 +116,14 @@ async function main() {
             }
         }
 
-        // search by tags
+        // search criteria: by tags
         if (tags) {
             criteria["tags.name"] = {
                 $in: tags.split(",")
             }
         }
 
-        // advanced search:  use $all with regular expressions
+        // search criteria:  use $all with regular expressions
         //   using arrow function to convert a comma-separated string 
         //   into array of case insenstive regular expression objects:
 
@@ -134,7 +137,7 @@ async function main() {
             }
         }
 
-        // search by string patterns using regular expression when needed
+        // debug search criteria in case of doubt
         console.log(criteria);  
 
         // search recipes 
@@ -148,7 +151,9 @@ async function main() {
 
     // Recipe details by _Id
     app.get('/recipes/detail', async function (req, res) {
-
+        const recipeObjectID = new ObjectId(req.query.id);
+        const recipe = await db.collection('recipes').findOne({"_id": recipeObjectID});
+        res.json({recipe});
     })
 
     // tags: ["quick", "easy", "vegetarian"]
@@ -336,6 +341,73 @@ async function main() {
         res.json({
             recipeId: result.insertedId
         })
+    })
+
+     // register router
+    // sample request body
+    // {
+    //    "email":"test456@gemail.com",
+    //    "password": "rotiprata"
+    // }
+    app.post('/users', async function (req, res) {
+        const result = await db.collection('users')
+            .insertOne({
+                "email": req.body.email,
+                "password": await bcrypt.hash(req.body.password, 12)
+            });
+
+        res.json({
+            message: "New user has been create has been created successfully",
+            userId: result.insertedId
+        })
+    })
+
+    // sample POST body
+    // {
+    //   "email":"test456@gemail.com",
+    //   "password":"rotiprata"
+    // }
+    app.post('/login', async function (req, res) {
+        const { email, password } = req.body;
+        const user = await db.collection("users").findOne({
+            "email": email
+        });
+        // compare takes in two parameters
+        // first parameter: plain text
+        // second parameter: hashed version
+        // return true if they are the same
+        if (user) {
+            const isPasswordValid = await bcrypt.compare(password, user.password);
+            if (isPasswordValid) {
+                // generate JWT
+                const accessToken = generateAccessToken(user._id, user.email)
+
+                // send back JWT
+                res.json({
+                    accessToken
+                })
+            } else {
+                return res.status(401).json({
+                    'error': 'Invalid login'
+                })
+            }
+        } else {
+            return res.status(401).json({
+                'error': 'Invalid login'
+            })
+        }
+
+    })
+
+    // The access token will be in the request's header, in the Authorization field
+    // the format will be "Bearer <JWT>"
+    app.get('/protected', verifyToken, function (req, res) {
+        const tokenData = req.tokenData; // added by the verifyToken middleware
+        res.json({
+            "message": "This is a secret message",
+            tokenData
+        })
+
     })
 }
 main();
