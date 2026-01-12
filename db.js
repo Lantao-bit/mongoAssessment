@@ -1,4 +1,4 @@
-//Using Mongo DB
+//Using Mongo DB - import individual variables instead of entire package (deconstructoring)
 const { MongoClient, ServerApiVersion } = require('mongodb');
 
 // global client (used a singleton)
@@ -17,11 +17,16 @@ async function connect(uri, dbname) {
     });
 
     // connect to the cluster using the client
-    await client.connect();
+    try {
+        await client.connect();
+        console.log("Successfully connected to Mongo")
 
-    console.log("Successfully connected to Mongo")
-    // return a connection to the database
-    return client.db(dbname);
+        // return a connection to the database
+        return client.db(dbname);
+
+    } catch (error) {
+        console.error('Error connecting to MongoDB', error);
+    }
 }
 
 // make the connect function available for other JavaScript files e.g. index.js

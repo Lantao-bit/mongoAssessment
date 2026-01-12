@@ -1,28 +1,33 @@
-require('dotenv').config(); // read the GEMINI_API_KEY and the GEMINI_MODEL from the .env file
+// load variables from the .env file into object process.env: GEMINI_API_KEY, GEMINI_MODEL
+require('dotenv').config();
+
+// import GoogleGenAI class from the Google Gemini library
 const { GoogleGenAI } = require('@google/genai');
+
+// initialize an instance of GoogleGenAI class for interaction with Gemini AI 
 const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY
 });
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash"
 
-
-
+// Use AI to generate structured search parameters from user's natural language query
 // first parameter - the query (the natural language query ), "I want to cook something using chicken and yogurt"
 // second parameter - tags: all the possible tags
 // third parameter - cuisines: all the cuisines
 // fourth parameter - ingrediebnts: all the ingredients in the database
 async function generateSearchParams(query, tags, cuisines, ingredients) {
-    const systemPrompt = `You are a search query converter. Convert the user's natural language query into a structured
- search format. Here are all the available tags, cuisines and ingredients
-
-
+    const systemPrompt = `You are a multilingual search query converter. Convert the user's natural language query in any languages into a structured search formatts in English. Here are all the available tags, cuisines and ingredients:
+ Available Tags: ${tags}
+ Available Cuisines: ${cuisines}
+ Available Ingredients: ${ingredients}
 
  Output: A JSON object with the following fields, ONLY using values from the available lists above and empty arrays 
  if no values apply:
  {
   "cuisine": string[],
   "tags": string[],
-  "ingredients": string[]
+  "ingredients": string[],
+  "userLanguage": string (the main language inferred from the user query contents)
  }
 
  - tags: array of strings of matching tags (OR logic - recipe has ANY of them)
@@ -56,11 +61,10 @@ Example input: "healthy thai soup with coconut and lemongrass"
 Example output: {"cuisines":["Thai"],"ingredients":["coconut","lemongrass"],"tags":["healthy","light"]}
 
 User's query: ${query}
- Available Tags: ${tags}
- Available Cuisines: ${cuisines}
- Available Ingredients: ${ingredients}
-
+ 
  `
+    // console.log(systemPrompt);
+    // call AI to generate structured search criteria
     const aiResponse = await ai.models.generateContent({
         model: MODEL,
         contents: systemPrompt,
@@ -86,23 +90,30 @@ User's query: ${query}
                         "items": {
                             "type": "string"
                         }
+                    },
+                    "userLanguage": {
+                        "type": "string"
                     }
                 },
                 "required": [
                     "ingredients",
                     "tags",
-                    "cuisines"
+                    "cuisines",
+                    "userLanguage"
                 ]
             }
         }
     })
 
+    //console.log(aiResponse.text);
     const searchParams = JSON.parse(aiResponse.text);
     return searchParams;
 }
 
+// Use AI to generate a recipe object from user's natural language recipe description 
 async function generateRecipe(recipeText, availableCuisines, availableTags) {
-    const systemPrompt = `You are a recipe parser. Convert the user's natural language recipe description into a structured recipe format.
+    const systemPrompt = `You are a multilingual recipe parser. Convert the user's natural 
+    language recipe description in any languages into a structured recipe format in English.
 
 Available cuisines: ${availableCuisines.join(', ')}
 Available tags: ${availableTags.join(', ')}
@@ -235,6 +246,24 @@ Recipe Text: ${recipeText}
 
 }
 
+// Use AI to translate recipe into user's main language used in query
+async function translateRecipe(recipe, userLanguage) {
+    recipeText = JSON.stringify(recipe);
+    const systemPrompt = `You are a multilingual recipe translator. Please translate the following array of recipes below into ${userLanguage} language, and format it into a structured human readable format.
+   
+Recipe: ${recipeText}
+
+Please response with the translated recipe text only without other words.
+`
+    //console.log(systemPrompt);
+    const aiResponse = await ai.models.generateContent({
+        model: MODEL,
+        contents: systemPrompt
+    });
+
+    return aiResponse.text;
+}
+
 module.exports = {
-    ai, MODEL, generateSearchParams, generateRecipe
+    ai, MODEL, generateSearchParams, generateRecipe, translateRecipe
 }

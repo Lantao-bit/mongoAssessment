@@ -17,6 +17,7 @@ function verifyToken(req, res, next) {
     // first parameter: token from the request's header
     // second parameter: the secret key (aka TOKEN SECRET)
     // third parameter: callback function, called when the verification has finished
+    // ARC testing: select and activate bearer @ Authorization  
     jwt.verify(token, process.env.TOKEN_SECRET, function (err, tokenData) {
         if (err) {
             return res.sendStatus(401);

@@ -4,8 +4,9 @@ require('dotenv').config();  // put the variables in the .env file into process.
 const cors = require('cors');
 const { connect } = require("./db");
 const { ObjectId } = require('mongodb');
-const { ai, generateSearchParams, generateRecipe } = require('./gemini');
-const e = require('express');
+const { BSONError } = require('mongodb/lib/bson'); // Import the internal BSONError
+const { ai, generateSearchParams, generateRecipe, translateRecipe } = require('./gemini');
+//const e = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { verifyToken } = require("./middlewares");
@@ -15,6 +16,21 @@ const app = express();
 app.use(cors()); // enable CORS for API
 app.use(express.json()); // tell Express that we are sending and reciving JSON
 
+// generate JWT upon successful login 
+function generateAccessToken(id, email) {
+    // jwt.sign creates a JWT
+    // first parameter -> object payload, or token data, the data that is in the JWT (i.e "claims")
+    // second parameter -> your secret key
+    // third parameter -> options object
+    return jwt.sign({
+        "user_id": id,
+        "email": email
+    }, process.env.TOKEN_SECRET, {
+        // m = minutes, h = hours, s = seconds, d = days, w = weeks
+        "expiresIn": "2w"
+    });
+}
+
 // SETUP DATABASE
 const mongoUri = process.env.MONGO_URI;   //from Compass cluster connection string 
 const dbName = "recipe_book";
@@ -23,7 +39,7 @@ const dbName = "recipe_book";
 async function validateRecipe(db, request) {
     const { name, cuisine, prepTime, cookTime, servings, ingredients, instructions, tags } = request;
 
-    // basic validation
+    // basic validation - all components are provided 
     if (!name || !cuisine || !ingredients || !instructions || !tags || !prepTime || !cookTime || !servings) {
         return {
             "success": false,
@@ -93,13 +109,11 @@ async function main() {
         })
     });
 
-    // /recipes Search using Query String parameter
+    // READ: recipes Search using Query String parameter
     // example: ?name=chicken&tags=popular,spicy&ingredients=chicken,yogurt
-    // name - the name of the recipe of the search b
-    // tags - the tags to search for using comma delimited strings
-    //        example: popular,spicy
-    // ingredients - the ingredients to search for using comma delimited strings
-    //        example: pasta,chicken
+    // name - single name of the recipe to search 
+    // tags - using comma delimited strings, example: popular,spicy
+    // ingredients - using comma delimited strings, example:chicken, yogurt
     app.get('/recipes/search', async function (req, res) {
         //    console.log(req.query);
         const name = req.query.name;
@@ -138,40 +152,52 @@ async function main() {
         }
 
         // debug search criteria in case of doubt
-        console.log(criteria);  
+        console.log(criteria);
 
-        // search recipes 
-        const recipes = await db.collection('recipes').find(criteria).project({
-            name: 1, cuisine: 1, tags: 1, prepTime: 1
-        }).toArray();
-        res.json({
-            "recipes": recipes
-        })
+        // search recipes: only limited recipe info is present including _Id object
+        try {
+            const recipes = await db.collection('recipes').find(criteria).project({
+                name: 1, cuisine: 1, tags: 1, prepTime: 1
+            }).toArray();
+            res.json({
+                "recipes": recipes
+            })
+        } catch (error) {
+            console.error("Error fetching recipes:", error);
+            res.status(500).json({ error: "Internal server error" });
+        }
     })
 
-    // Recipe details by _Id
+    // READ a recipe detail by ID via query string, example ?id=695f64e320c0ab9c7a35125d 
     app.get('/recipes/detail', async function (req, res) {
-        const recipeObjectID = new ObjectId(req.query.id);
-        const recipe = await db.collection('recipes').findOne({"_id": recipeObjectID});
-        res.json({recipe});
+        try {
+            const recipeId = req.query.id;
+            const recipe = await db.collection('recipes').findOne(
+                { _id: new ObjectId(recipeId) },
+                { projection: { _Id: 0 } });
+
+            if (!recipe) {
+                return res.status(404).json({ error: "recipe not found." });
+            }
+            res.json({ recipe });
+        } catch (error) {
+
+            // Handles cases where the provided recipeId is not a valid ObjectId format
+            if (error instanceof BSONError) {
+                return res.status(400).json({ error: "Invalid recipe ID format." });
+            }
+            console.error("Error fetching recipe:", error);
+            res.status(500).json({ error: "Internal server error" });
+
+        }
     })
 
-    // tags: ["quick", "easy", "vegetarian"]
-    app.post('/recipes', async function (req, res) {
-        // extract out the various components of the recipe document from req.body
-        // const name = req.body.name;
-        // const cuisine = req.body.cuisine;
-        // const prepTime = req.body.prepTime;
-        // const cookTime = req.body.cookTime;
-        // const servings = req.body.servings;
-        // const ingredients = req.body.ingredients;
-        // const instructions = req.body.instructions;
-        // const tags = req.body.tags;
-
+    // CREATE (post) recipe  
+    app.post('/recipes/create', async function (req, res) {
         // use object destructuring to extract each components from req.body
         const { name, cuisine, prepTime, cookTime, servings, ingredients, instructions, tags } = req.body;
 
-        // basic validation
+        // basic validation to ensure that all components are available 
         if (!name || !cuisine || !ingredients || !instructions || !tags || !prepTime || !cookTime || !servings) {
             // HTTP 400 error code = Bad request
             return res.status(400).json({
@@ -190,22 +216,21 @@ async function main() {
             })
         }
 
-        // validate the tags
-
-        // find the tags from the database
+        // validate the tags - find the tags from the database
         const tagDocs = await db.collection('tags').find({
             "name": {
                 $in: tags
             }
         }).toArray();
 
-        // check if the number of tags that we have found matches the length of the tags array
+        // validate the tags - check if the number of tags provided = that of tags found
         if (tagDocs.length != tags.length) {
             return res.status(400).json({
                 'error': "One or more tags is invalid"
             })
         }
 
+        // prepare the recipe object
         const newRecipe = {
             _id: new ObjectId(),  // optional, 'cos when Mongo inserts a new document, it will ensure that an _id
             name,
@@ -221,34 +246,52 @@ async function main() {
             tags: tagDocs
         }
 
-        const result = await db.collection('recipes').insertOne(newRecipe);
-        res.status(201).json({
-            message: "Recipe created",
-            recipeId: result.insertedId
-        })
-    })
-
-    app.put('/recipes/:id', async function (req, res) {
-        const recipeId = req.params.id;
-        const status = await validateRecipe(db, req.body);
-        if (status.success) {
-            // update the recipe
-            const result = await db.collection('recipes').updateOne({
-                _id: new ObjectId(recipeId)
-            }, {
-                $set: status.newRecipe
-            });
-            res.json({
-                'message': "Recipe has been updated successful"
+        // create the recipe in database 
+        try {
+            const result = await db.collection('recipes').insertOne(newRecipe);
+            res.status(201).json({
+                message: "Recipe created",
+                recipeId: result.insertedId
             })
-        } else {
-            res.status(400).json({
-                error: status.error
-            })
+        } catch (error) {
+            console.error("Error fetching recipe:", error);
+            res.status(500).json({ error: "Internal server error" });
         }
     })
 
-    app.delete('/recipes/:id', async function (req, res) {
+    // UPDATE(put) a recipe via id parameter, example: /recipes/695f64e320c0ab9c7a35125d
+    //.  new recipe is provide as an object in the PUT request body
+    app.put('/recipes/update/:id', async function (req, res) {
+        try {
+            const recipeId = req.params.id;
+            console.log(recipeId);
+            const status = await validateRecipe(db, req.body);
+            if (status.success) {
+                // update the recipe
+                const result = await db.collection('recipes').updateOne(
+                    { _id: new ObjectId(recipeId) },
+                    { $set: status.newRecipe });
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ error: 'Recipe not found' });
+                }
+
+                res.json({
+                    'message': "Recipe has been updated successful"
+                })
+            } else {
+                res.status(400).json({
+                    error: status.error
+                })
+            }
+        } catch (error) {
+            console.error('Error updating recipe:', error);
+            res.status(500).json({ error: 'Internal server error' });
+        }
+
+    })
+    // DELETE recipe via id parameter, exmple: /recipes/<from database or search result>
+    app.delete('/recipes/delete/:id', async function (req, res) {
         try {
             const recipeId = req.params.id;
             const results = await db.collection('recipes').deleteOne({
@@ -272,6 +315,53 @@ async function main() {
 
     })
 
+    // REVIEW (post) recipe, example /recipes/695f64e320c0ab9c7a35125d/reviews
+    app.post('/recipes/:id/reviews', async (req, res) => {
+        try {
+            const recipeId = req.params.id;
+            const { user, rating, comment } = req.body;
+
+            // Basic validation
+            if (!user || !rating || !comment) {
+                return res.status(400).json({ error: 'Missing required fields' });
+            }
+
+            // Create the new review object
+            const newReview = {
+                review_id: new ObjectId(),
+                user,
+                rating: Number(rating),
+                comment,
+                date: new Date()
+            };
+
+            // Add the review to the recipe
+            const result = await db.collection('recipes').updateOne(
+                { _id: new ObjectId(recipeId) },
+                { $push: { reviews: newReview } }
+            );
+
+            if (result.matchedCount === 0) {
+                return res.status(404).json({ error: 'Recipe not found' });
+            }
+
+            res.status(201).json({
+                message: 'Review added successfully',
+                reviewId: newReview.review_id
+            });
+        } catch (error) {
+            console.error('Error adding review:', error);
+            res.status(500).json({ error: 'Internal server error' });
+        }
+    });
+
+
+    // Usecase - recipe search using natural language and translation  
+    // 1. Call AI to convert user's natural multilingual languages query into a structured search params 
+    //    in English using available tags, cuisines and ingredients avaiable from database. 
+    // 2. Prompt AI in the same call to infer the main user language from the query      
+    // 3. Find receipts from MongoDB using criteria formed from the above AI response
+    // 4. Call AI to translate the recipes into human friendly format in user language 
     app.get('/ai/recipes', async function (req, res) {
         const query = req.query.q;
 
@@ -279,8 +369,8 @@ async function main() {
         const allTags = await db.collection('tags').distinct('name');
         const allIngredients = await db.collection('recipes').distinct('ingredients.name');
 
+        // call AI to generate strutured search parameters
         const searchParams = await generateSearchParams(query, allTags, allCuisines, allIngredients);
-        console.log(searchParams);
         const criteria = {};
 
         if (searchParams.cuisines && searchParams.cuisines.length > 0) {
@@ -301,18 +391,24 @@ async function main() {
             }
         }
 
-        console.log(criteria);
-
+        const userLanguage = searchParams.userLanguage;
         const recipes = await db.collection('recipes').find(criteria).toArray();
-        res.json({
-            recipes
-        })
+
+        // call AI to translate recipes
+        const translatedRecipe = await translateRecipe(recipes, userLanguage);
+        console.log(translatedRecipe);
+
+        res.send(translateRecipe)   
     })
 
+    // Use AI to generte a structured recipe from user's natural langauage description 
     app.post('/ai/recipes', async function (req, res) {
-        const recipeText = req.body.recipeText;
+        // recipe text from the request body
+        const recipeText = req.body.recipeText; 
         const allCuisines = await db.collection('cuisines').distinct('name');
         const allTags = await db.collection('tags').distinct('name');
+
+        // call AI to generate the recipe 
         const newRecipe = await generateRecipe(recipeText, allCuisines, allTags);
 
         // get the cuisine document
@@ -330,25 +426,19 @@ async function main() {
 
         // get all the tags that corresponds 
         const tagDocs = await db.collection('tags').find({
-            'name': {
-                $in: newRecipe.tags
-            }
+            'name': { $in: newRecipe.tags }
         }).toArray();
         newRecipe.tags = tagDocs;
 
         // insert into the database
         const result = await db.collection('recipes').insertOne(newRecipe);
-        res.json({
-            recipeId: result.insertedId
-        })
+        res.json({ recipeId: result.insertedId })
     })
 
-     // register router
+    // User register, password is hashed and stored
     // sample request body
-    // {
-    //    "email":"test456@gemail.com",
-    //    "password": "rotiprata"
-    // }
+    // {  "email":"test456@gemail.com",
+    //    "password": "rotiprata"        }
     app.post('/users', async function (req, res) {
         const result = await db.collection('users')
             .insertOne({
@@ -362,20 +452,18 @@ async function main() {
         })
     })
 
+    // User login, and JWT created and returned  
     // sample POST body
-    // {
-    //   "email":"test456@gemail.com",
-    //   "password":"rotiprata"
-    // }
+    // {   "email":"test456@gemail.com",
+    //      "password":"rotiprata".       }
     app.post('/login', async function (req, res) {
-        const { email, password } = req.body;
-        const user = await db.collection("users").findOne({
-            "email": email
-        });
-        // compare takes in two parameters
-        // first parameter: plain text
-        // second parameter: hashed version
-        // return true if they are the same
+        const { email, password } = req.body;     // eamil id & password from request
+
+        // retrieve user email id and hashed password from databae  
+        const user = await db.collection("users").findOne({ "email": email });
+
+        // when user is found, compare password: plain text vs hashed 
+        // the bcrypt.compar returns true if they are the same
         if (user) {
             const isPasswordValid = await bcrypt.compare(password, user.password);
             if (isPasswordValid) {
@@ -383,22 +471,12 @@ async function main() {
                 const accessToken = generateAccessToken(user._id, user.email)
 
                 // send back JWT
-                res.json({
-                    accessToken
-                })
-            } else {
-                return res.status(401).json({
-                    'error': 'Invalid login'
-                })
-            }
-        } else {
-            return res.status(401).json({
-                'error': 'Invalid login'
-            })
-        }
-
+                res.json({ accessToken })
+            } else { return res.status(401).json({ 'error': 'Invalid login' }) }
+        } else { return res.status(401).json({ 'error': 'Invalid login' }) }
     })
 
+    // example to use JWT to protect route access 
     // The access token will be in the request's header, in the Authorization field
     // the format will be "Bearer <JWT>"
     app.get('/protected', verifyToken, function (req, res) {
@@ -407,11 +485,10 @@ async function main() {
             "message": "This is a secret message",
             tokenData
         })
-
     })
 }
-main();
 
+main();
 
 
 // START SERVER
