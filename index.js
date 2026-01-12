@@ -111,9 +111,7 @@ async function main() {
 
     // READ: recipes Search using Query String parameter
     // example: ?name=chicken&tags=popular,spicy&ingredients=chicken,yogurt
-    // name - single name of the recipe to search 
-    // tags - using comma delimited strings, example: popular,spicy
-    // ingredients - using comma delimited strings, example:chicken, yogurt
+
     app.get('/recipes/search', async function (req, res) {
         //    console.log(req.query);
         const name = req.query.name;
@@ -290,7 +288,7 @@ async function main() {
         }
 
     })
-    // DELETE recipe via id parameter, exmple: /recipes/<from database or search result>
+    // DELETE recipe via id parameter, exmple: /recipes/<ID from database or search result>
     app.delete('/recipes/delete/:id', async function (req, res) {
         try {
             const recipeId = req.params.id;
