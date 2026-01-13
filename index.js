@@ -393,10 +393,11 @@ async function main() {
         const recipes = await db.collection('recipes').find(criteria).toArray();
 
         // call AI to translate recipes
+        console.log(userLanguage);
         const translatedRecipe = await translateRecipe(recipes, userLanguage);
         console.log(translatedRecipe);
 
-        res.send(translateRecipe)   
+        res.send(`${translatedRecipe}`)   
     })
 
     // Use AI to generte a structured recipe from user's natural langauage description 
